@@ -10,11 +10,13 @@ else
 	EXTRA_LDFLAGS = -lasound -Wl,--as-needed -Wl,--gc-sections -flto -s
 endif
 
-TARGET = main
+TARGET = st
 C_SOURCES =  \
 		${wildcard $(SRCS_DIR)/*.c}
 CPP_SOURCES =  \
 		${wildcard $(SRCS_DIR)/*.cpp}
+
+VERSION = 0.3
 
 CC = $(CROSS_COMPILE)gcc
 CXX = $(CROSS_COMPILE)g++
@@ -25,7 +27,7 @@ SDL_LIBS    := $(shell $(SYSROOT)/usr/bin/sdl-config --libs)
 
 OBJ_DIR := $(BUILD_DIR)/obj
 
-DEFINES = -DHAVE_STDINT_H -DVERSION_BITTBOY
+DEFINES = -DHAVE_STDINT_H -DVERSION_BITTBOY -DRG35XX -DVERSION=\"${VERSION}\"
 INCLUDES = -Iinclude $(SDL_CFLAGS)
 OPT_FLAGS  = -Ofast -fdata-sections -fdata-sections -fno-common -fno-PIC -flto
 
