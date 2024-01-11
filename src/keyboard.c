@@ -1,65 +1,9 @@
 #include <SDL/SDL.h>
 #include "font.h"
+#include "config.h"
 
 #define NUM_ROWS 6
 #define NUM_KEYS 18
-
-#ifdef RG35XX
-//	RG35xx
-#define KEY_UP SDLK_w
-#define KEY_DOWN SDLK_s
-#define KEY_LEFT SDLK_q
-#define KEY_RIGHT SDLK_d
-#define KEY_ENTER SDLK_a // A
-#define KEY_TOGGLE SDLK_b // B
-#define KEY_BACKSPACE SDLK_l // R
-#define KEY_SHIFT SDLK_h // L
-#define KEY_LOCATION SDLK_y // Y
-#define KEY_ACTIVATE SDLK_x // X
-#define KEY_QUIT SDLK_u // MENU
-#define KEY_TAB SDLK_n // SELECT
-#define KEY_RETURN SDLK_m // START
-#define KEY_ARROW_LEFT	SDLK_j // L2
-#define KEY_ARROW_RIGHT	SDLK_k // R2
-
-#elif MIYOOMINI
-//	miyoomini
-#define KEY_UP SDLK_UP
-#define KEY_DOWN SDLK_DOWN
-#define KEY_LEFT SDLK_LEFT
-#define KEY_RIGHT SDLK_RIGHT
-#define KEY_ENTER SDLK_SPACE // A
-#define KEY_TOGGLE SDLK_LCTRL // B
-#define KEY_BACKSPACE SDLK_t // R1
-#define KEY_SHIFT SDLK_e // L1
-#define KEY_LOCATION SDLK_LALT // Y
-#define KEY_ACTIVATE SDLK_LSHIFT // X
-#define KEY_QUIT SDLK_ESCAPE // MENU
-//#define KEY_HELP SDLK_RETURN // 
-#define KEY_TAB SDLK_RCTRL // SELECT
-#define KEY_RETURN SDLK_RETURN // START
-#define KEY_ARROW_LEFT	SDLK_TAB // L2
-#define KEY_ARROW_RIGHT	SDLK_BACKSPACE // R2
-//#define KEY_ARROW_UP	SDLK_KP_DIVIDE //
-//#define KEY_ARROW_DOWN	SDLK_KP_PERIOD //
-
-#elif TRIMUISMART
-//	TRIMUI smart (same as TRIMUI)
-#define KEY_UP SDLK_UP
-#define KEY_DOWN SDLK_DOWN
-#define KEY_LEFT SDLK_LEFT
-#define KEY_RIGHT SDLK_RIGHT
-#define KEY_ENTER SDLK_SPACE // A
-#define KEY_TOGGLE SDLK_LCTRL // B
-#define KEY_BACKSPACE SDLK_BACKSPACE // R
-#define KEY_SHIFT SDLK_TAB // L
-#define KEY_LOCATION SDLK_LSHIFT // Y
-#define KEY_ACTIVATE SDLK_LALT // X
-#define KEY_QUIT SDLK_ESCAPE // MENU
-#define KEY_TAB SDLK_RCTRL // SELECT
-#define KEY_RETURN SDLK_RETURN // START
-
-#endif
 
 #define KMOD_SYNTHETIC (1 << 13)
 
@@ -120,68 +64,66 @@ void init_keyboard() {
 
 }
 
-char* help = 
-"How to use:\n"
-"  ARROWS: select key from keyboard\n"
-"  A:  press key\n"
-"  B:  toggle key (useful for shift/ctrl...)\n"
-#ifndef TRIMUISMART
-"  L1: shift\n"
-"  R1: backspace\n"
-#else
-"  L:  shift\n"
-"  R:  backspace\n"
-#endif
-"  Y:  change keyboard location (top/bottom)\n"
-"  X:  show / hide keyboard\n"
-"  START:    enter\n"
-"  SELECT:   tab\n"
-#ifndef TRIMUISMART
-"  L2:       left\n"
-"  R2:       right\n"
-#endif
-"  MENU:     quit\n\n"
-"Cheatcheet (tutorial at www.shellscript.sh):\n"
-"  TAB key         complete path\n"
-"  UP/DOWN keys    navigate history\n"
-"  pwd             print current directory\n"
-"  ls              list files (-l for file size)\n"
-"  cd <d>          change directory (.. = go up)\n"
-"  cp <f> <d>      copy files (dest can be dir)\n"
-"  mv <f> <d>      move files (dest can be dir)\n"
-"  rm <f>          remove files (use -rf for dir)\n"
-;
+char* help[] = {
+"使用说明:",
+"  方向键: 从软键盘中选择键",
+"  A:  单击选择的按键",
+"  B:  切换按键状态 (用于shift/ctrl...)",
+"  L:  shift",
+"  R:  backspace",
+"  Y:  更改软键盘位置 (顶部/底部)",
+"  X:  显示/隐藏软键盘",
+"  START:    enter",
+"  SELECT:   tab",
+"  L2:       left",
+"  R2:       right",
+"  MENU:     退出",
+"提示 (来自 www.shellscript.sh):",
+"  TAB key         路径补全",
+"  UP/DOWN keys    浏览历史记录",
+"  pwd             打印当前目录",
+"  ls              列出文件 (-l 用于文件大小)",
+"  cd <d>          改变目录 (.. = 上级目录)",
+"  cp <f> <d>      复制文件 (dest 可以是目录)",
+"  mv <f> <d>      移动文件 (dest 可以是目录)",
+"  rm <f>          删除文件 (目录使用 -rf)",
+};
 
 void draw_keyboard(SDL_Surface* surface) {
 	unsigned short bg_color = SDL_MapRGB(surface->format, 64, 64, 64);
 	unsigned short key_color = SDL_MapRGB(surface->format, 128, 128, 128);
 	unsigned short text_color = SDL_MapRGB(surface->format, 0, 0, 0);
+	SDL_Color text_color_sdl = { 0, 0, 0 };
 	unsigned short sel_color = SDL_MapRGB(surface->format, 128, 255, 128);
+	SDL_Color sel_color_sdl = {  128, 255, 128 };
 	unsigned short sel_toggled_color = SDL_MapRGB(surface->format, 255, 255, 128);
+	SDL_Color sel_toggled_color_sdl = {  255, 255, 128 };
 	unsigned short toggled_color = SDL_MapRGB(surface->format, 192, 192, 0);
 	if(show_help) {
 		SDL_FillRect(surface, NULL, text_color);
-		draw_string(surface, "SDL Terminal by Benob, based on st-sdl", 0, 10, sel_toggled_color);
-		draw_string(surface, help, 8, 30, sel_color);
+		draw_string(surface, "SDL Terminal by Quard, based on st-sdl", FONT_WIDTH*12, FONT_HEIGHT*0, &sel_toggled_color_sdl);
+		for(size_t i = 0; i < sizeof(help)/sizeof(char*);i++) {
+			draw_string(surface, help[i], FONT_WIDTH*8, 5+FONT_HEIGHT*(1+i), &sel_color_sdl);
+		}
 		return;
 	}
 	if(!active) return;
 	int total_length = -1;
 	for(int i = 0; i < NUM_KEYS && syms[0][0][i]; i++) {
-		total_length += (1 + strlen(syms[0][0][i])) * 6;
+		total_length += (1 + strlen(syms[0][0][i])) * FONT_WIDTH;
 	}
 	int center_x = (surface->w - total_length) / 2;
-	int x = center_x, y = surface->h - 8 * (NUM_ROWS) - 16;
+	int x = center_x, y = surface->h - (FONT_HEIGHT+2) * (NUM_ROWS) - 16;
 	if(location == 1) y = 16;
 
-	SDL_Rect rect = {x - 4, y - 3, total_length + 3, NUM_ROWS * 8 + 3};
+	SDL_Rect rect = {x - 4, y - 3, total_length + 3, NUM_ROWS * (FONT_HEIGHT+2) + 3};
 	SDL_FillRect(surface, &rect, bg_color);
 
 	for(int j = 0; j < NUM_ROWS; j++) {
-		x = center_x;
+		x = center_x + 2;
 		for(int i = 0; i < row_length[j]; i++) {
 			int length = strlen(syms[shifted][j][i]);
-			SDL_Rect r2 = {x - 2, y - 1, length * 6 + 4, 7};
+			SDL_Rect r2 = {x - 2, y - 1, length * FONT_WIDTH + 4, FONT_HEIGHT};
 			if(toggled[j][i]) {
 				if(selected_i == i && selected_j == j) {
 					SDL_FillRect(surface, &r2, sel_toggled_color);
@@ -193,10 +135,10 @@ void draw_keyboard(SDL_Surface* surface) {
 			} else {
 				SDL_FillRect(surface, &r2, key_color);
 			}
-			draw_string(surface, syms[shifted][j][i], x, y, text_color);
-			x += 6 * (length + 1);
+			draw_string(surface, syms[shifted][j][i], x, y-4, &text_color_sdl);
+			x += FONT_WIDTH * (length + 1);
 		}
-		y += 8;
+		y += FONT_HEIGHT+2;
 	}
 }
 

@@ -24,11 +24,12 @@
 
 #include <SDL/SDL.h>
 #include <SDL/SDL_thread.h>
-//#include <SDL/SDL_ttf.h>
+#include <SDL/SDL_ttf.h>
 
 #include "font.h"
 #include "keyboard.h"
 #include "msg_queue.h"
+#include "config.h"
 
 #define Glyph Glyph_
 #define Font Font_
@@ -245,22 +246,101 @@ typedef struct {
 	const Arg arg;
 } Shortcut;
 
-/* function definitions used in config.h */
-static void xzoom(const Arg *);
+/* double-click timeout (in milliseconds) between clicks for selection */
+static unsigned int doubleclicktimeout = 300;
+static unsigned int tripleclicktimeout = 600;
 
-/* Config.h for applying patches and the configuration. */
-#include "config.h"
+/* TERM value */
+static char termname[] = "xterm";
+
+/* Terminal colors (16 first used in escape sequence) */
+SDL_Color colormap[] = {
+	/* 8 normal colors */
+	{   0,   0,   0, 0 },//black
+	{ 128,   0,   0, 0 },//"red3",
+	{   0, 128,   0, 0 },//"green3",
+	{ 128, 128,   0, 0 },//"yellow3",
+	{   0,   0, 128, 0 },//"blue2",
+	{ 128,   0, 128, 0 },//"magenta3",
+	{   0, 128, 128, 0 },//"cyan3",
+	{ 192, 192, 192, 0 },//"gray90",
+
+	/* 8 bright colors */
+	{ 128, 128, 128, 0}, //"gray50",
+	{ 255,   0,   0, 0 },//red
+	{   0, 255,   0, 0 },//green
+	{ 255, 255,   0, 0 },//"yellow",
+	{   0,   0, 255, 0 },//"#0000ff",
+	{ 255,   0, 255, 0 },//"magenta",
+	{   0, 255, 255, 0 },//"cyan",
+	{ 255, 255, 255, 0 },//"white",
+
+	[255] = { 0, 0, 0, 0 },
+
+	/* more colors can be added after 255 to use with DefaultXX */
+	{ 204, 204, 204, 0},
+	{  51,  51,  51, 0},
+};
+
+/*
+ * Default colors (colorname index)
+ * foreground, background, cursor, unfocused cursor
+ */
+static unsigned int defaultfg = 7;
+static unsigned int defaultbg = 0;
+static unsigned int defaultcs = 256;
+static unsigned int defaultucs = 257;
+
+/*
+ * Special keys (change & recompile st.info accordingly)
+ * Keep in mind that kpress() in st.c hardcodes some keys.
+ *
+ * Mask value:
+ * * Use XK_ANY_MOD to match the key no matter modifiers state
+ * * Use XK_NO_MOD to match the key alone (no modifiers)
+ */
+
+/* key, mask, output */
+static Key key[] = {
+	{ SDLK_LEFT,      KMOD_ALT,  "\033[1;3D" },
+	{ SDLK_RIGHT,     KMOD_ALT,  "\033[1;3C" },
+
+	{ SDLK_BACKSPACE, 0, "\177" },
+	{ SDLK_INSERT,    0, "\033[2~" },
+	{ SDLK_DELETE,    0, "\033[3~" },
+	{ SDLK_HOME,      0, "\033[1~" },
+	{ SDLK_END,       0, "\033[4~" },
+	{ SDLK_PAGEUP,    0, "\033[5~" },
+	{ SDLK_PAGEDOWN,  0, "\033[6~" },
+	{ SDLK_F1,        0, "\033OP"   },
+	{ SDLK_F2,        0, "\033OQ"   },
+	{ SDLK_F3,        0, "\033OR"   },
+	{ SDLK_F4,        0, "\033OS"   },
+	{ SDLK_F5,        0, "\033[15~" },
+	{ SDLK_F6,        0, "\033[17~" },
+	{ SDLK_F7,        0, "\033[18~" },
+	{ SDLK_F8,        0, "\033[19~" },
+	{ SDLK_F9,        0, "\033[20~" },
+	{ SDLK_F10,       0, "\033[21~" },
+	{ SDLK_F11,       0, "\033[23~" },
+	{ SDLK_F12,       0, "\033[24~" },
+};
+
+/* Internal shortcuts. */
+#define MODKEY KMOD_ALT
+static void xzoom(const Arg *);
+static Shortcut shortcuts[] = {
+	/* modifier		key		function	argument */
+	{ MODKEY|KMOD_SHIFT,	SDLK_PAGEUP,	xzoom,		{.i = +1} },
+	{ MODKEY|KMOD_SHIFT,	SDLK_PAGEDOWN,	xzoom,		{.i = -1} },
+};
 
 SDL_Surface* screen;
-#if defined(MIYOOMINI) || defined(TRIMUISMART) || defined(RG35XX)
-SDL_Surface* screen2;
-#endif
 char preload_libname[PATH_MAX + 17];
 
 /* Drawing Context */
 typedef struct {
 	SDL_Color colors[LEN(colormap) < 256 ? 256 : LEN(colormap)];
-	//TTF_Font *font, *ifont, *bfont, *ibfont;
 } DC;
 
 static void die(const char *, ...);
@@ -386,11 +466,7 @@ static char *opt_title = NULL;
 static char *opt_class = NULL;
 static char *opt_font = NULL;
 
-static char *usedfont = NULL;
-static int usedfontsize = 0;
-
-ssize_t
-xwrite(int fd, char *s, size_t len) {
+ssize_t xwrite(int fd, char *s, size_t len) {
 	size_t aux = len;
 
 	while(len > 0) {
@@ -403,8 +479,7 @@ xwrite(int fd, char *s, size_t len) {
 	return aux;
 }
 
-void *
-xmalloc(size_t len) {
+void * xmalloc(size_t len) {
 	void *p = malloc(len);
 
 	if(!p)
@@ -413,16 +488,14 @@ xmalloc(size_t len) {
 	return p;
 }
 
-void *
-xrealloc(void *p, size_t len) {
+void * xrealloc(void *p, size_t len) {
 	if((p = realloc(p, len)) == NULL)
 		die("Out of memory\n");
 
 	return p;
 }
 
-void *
-xcalloc(size_t nmemb, size_t size) {
+void * xcalloc(size_t nmemb, size_t size) {
 	void *p = calloc(nmemb, size);
 
 	if(!p)
@@ -431,92 +504,14 @@ xcalloc(size_t nmemb, size_t size) {
 	return p;
 }
 
-#ifdef RG35XX
-//	upscale 320x240x16 -> 640x480x16
-void upscale2x(uint32_t* restrict src, uint32_t* restrict dst) {
-	uint32_t x, y, pix, dpix1, dpix2;
-	for(y = 240; y>0; y--, dst+=320) {
-		for(x = 320/2; x>0; x--, dst+=2) {
-			pix=*src++;
-			dpix1=(pix & 0x0000FFFF)|(pix<<16);
-			dpix2=(pix & 0xFFFF0000)|(pix>>16);
-			dst[0] = dpix1; dst[1] = dpix2;
-			dst[320] = dpix1; dst[321] = dpix2;
-		}
-	}
-}
-#elif MIYOOMINI
-//	upscale 320x240x16 -> 640x480x32 with rotate180
-void upscale_and_rotate(uint32_t* restrict src, uint32_t* restrict dst) {
-	dst = dst + 640*480 -1;
-	uint32_t x, y, pix, dpix;
-	for(y = 240; y>0 ; y--, dst-=640) {
-		for(x = 320/2; x>0 ; x--, dst-=4) {
-			pix=*src++;
-					//   00000000RRRRRRRRGGGGGGGGBBBBBBBB
-			dpix=	((pix>>2) &0b00000000000000000000000000000111)|
-				((pix>>1) &0b00000000000000000000001100000000)|
-				((pix<<3) &0b00000000000001110000000011111000)|
-				((pix<<5) &0b00000000000000001111110000000000)|
-				((pix<<8) &0b00000000111110000000000000000000);
-			*dst=dpix; *(dst-1)=dpix; *(dst-640)=dpix; *(dst-641)=dpix;
-			dpix=	((pix>>8) &0b00000000111110000000000000000000)|
-				((pix>>11)&0b00000000000000001111110000000000)|
-				((pix>>13)&0b00000000000001110000000011111000)|
-				((pix>>17)&0b00000000000000000000001100000000)|
-				((pix>>18)&0b00000000000000000000000000000111);
-			*(dst-2)=dpix; *(dst-3)=dpix; *(dst-642)=dpix; *(dst-643)=dpix;
-		}
-	}
-}
-#elif TRIMUISMART
-//	320x240 -> 240x320 rotate90 CCW
-//	AB    BD
-//	CD -> AC
-void rotate320x240_rw32(void* __restrict src, void* __restrict dst) {
-	uint32_t	*s, *d, pix1, pix2;
-	int		x, y;
-
-	s = (uint32_t*)src + 159;
-	d = (uint32_t*)dst;
-	for (x=160; x>0; x--, s -= 160*240+1, d += 120) {
-		for (y=120; y>0; y--, s += 320, d++) {
-			pix1 = s[0];					// read AB
-			pix2 = s[160];					// read CD
-			d[0] = (pix1>>16) | (pix2 & 0xFFFF0000);	// write BD
-			d[120] = (pix1 & 0xFFFF) | (pix2<<16);		// write AC
-		}
-	}
-}
-#endif
-
-void
-xflip(void) {
+void xflip(void) {
 	if(xw.win == NULL) return;
-    //printf("flip\n");
-#if defined(MIYOOMINI) || defined(TRIMUISMART) || defined(RG35XX)
-	memcpy(screen2->pixels, xw.win->pixels, 320*240*2);	// copy for keyboardMix
-	draw_keyboard(screen2);					// screen2(SW) = console + keyboard
-#ifdef RG35XX
-	upscale2x(screen2->pixels, screen->pixels);
-#elif MIYOOMINI
-	upscale_and_rotate(screen2->pixels, screen->pixels);
-#else
-	rotate320x240_rw32(screen2->pixels, screen->pixels);
-#endif
-	SDL_Flip(screen);
-#else
 	SDL_BlitSurface(xw.win, NULL, screen, NULL);
 	draw_keyboard(screen);
-	if(SDL_Flip(screen)) {
-	        //fputs("FLIP ERROR\n", stderr);
-		//exit(EXIT_FAILURE);
-	}
-#endif
+	SDL_Flip(screen);
 }
 
-int
-utf8decode(char *s, long *u) {
+int utf8decode(char *s, long *u) {
 	uchar c;
 	int i, n, rtn;
 
@@ -560,8 +555,7 @@ invalid:
 	return rtn;
 }
 
-int
-utf8encode(long *u, char *s) {
+int utf8encode(long *u, char *s) {
 	uchar *sp;
 	ulong uc;
 	int i, n;
@@ -599,8 +593,7 @@ invalid:
 
 /* use this if your buffer is less than UTF_SIZ, it returns 1 if you can decode
    UTF-8 otherwise return 0 */
-int
-isfullutf8(char *s, int b) {
+int isfullutf8(char *s, int b) {
 	uchar *c1, *c2, *c3;
 
 	c1 = (uchar *)s;
@@ -624,8 +617,7 @@ isfullutf8(char *s, int b) {
 	}
 }
 
-int
-utf8size(char *s) {
+int utf8size(char *s) {
 	uchar c = *s;
 
 	if(~c&B7) {
@@ -639,39 +631,24 @@ utf8size(char *s) {
 	}
 }
 
-void
-selinit(void) {
-// TODO
-#if 0
-	memset(&sel.tclick1, 0, sizeof(sel.tclick1));
-	memset(&sel.tclick2, 0, sizeof(sel.tclick2));
-	sel.mode = 0;
-	sel.bx = -1;
-	sel.clip = NULL;
-	sel.xtarget = XInternAtom(xw.dpy, "UTF8_STRING", 0);
-	if(sel.xtarget == None)
-		sel.xtarget = XA_STRING;
-#endif
+void selinit(void) {
 }
 
-static int
-x2col(int x) {
-	x -= borderpx;
+static int x2col(int x) {
+	x -= BORDER_PX;
 	x /= xw.cw;
 
 	return LIMIT(x, 0, term.col-1);
 }
 
-static int
-y2row(int y) {
-	y -= borderpx;
+static int y2row(int y) {
+	y -= BORDER_PX;
 	y /= xw.ch;
 
 	return LIMIT(y, 0, term.row-1);
 }
 
-static inline bool
-selected(int x, int y) {
+static inline bool selected(int x, int y) {
 	int bx, ex;
 
 	if(sel.ey == y && sel.by == y) {
@@ -686,8 +663,7 @@ selected(int x, int y) {
 				&& (x <= sel.e.x || sel.b.y != sel.e.y));
 }
 
-void
-getbuttoninfo(SDL_Event *e, int *b, int *x, int *y) {
+void getbuttoninfo(SDL_Event *e, int *b, int *x, int *y) {
 	if(b)
 		*b = e->button.button;
 
@@ -700,8 +676,7 @@ getbuttoninfo(SDL_Event *e, int *b, int *x, int *y) {
 	sel.e.y = MAX(sel.by, sel.ey);
 }
 
-void
-mousereport(SDL_Event *e) {
+void mousereport(SDL_Event *e) {
 	int x = x2col(e->button.x);
 	int y = y2row(e->button.y);
 	int button = e->button.button;
@@ -737,8 +712,7 @@ mousereport(SDL_Event *e) {
 	ttywrite(buf, sizeof(buf));
 }
 
-void
-bpress(SDL_Event *e) {
+void bpress(SDL_Event *e) {
 	if(IS_SET(MODE_MOUSE)) {
 		mousereport(e);
 	} else if(e->button.button == SDL_BUTTON_LEFT) {
@@ -753,8 +727,7 @@ bpress(SDL_Event *e) {
 	}
 }
 
-void
-selcopy(void) {
+void selcopy(void) {
 	char *str, *ptr, *p;
 	int x, y, bufsize, is_selected = 0, size;
 	Glyph *gp, *last;
@@ -793,8 +766,7 @@ selcopy(void) {
 }
 
 #if 0
-void
-selnotify(SDL_Event *e) {
+void selnotify(SDL_Event *e) {
 (void)e;
 // TODO
 	ulong nitems, ofs, rem;
@@ -818,8 +790,7 @@ selnotify(SDL_Event *e) {
 }
 #endif
 
-void
-selpaste(void) {
+void selpaste(void) {
 // TODO
 #if 0
 	XConvertSelection(xw.dpy, XA_PRIMARY, sel.xtarget, XA_PRIMARY,
@@ -836,8 +807,7 @@ void selclear(SDL_Event *e) {
 	tsetdirt(sel.b.y, sel.e.y);
 }
 
-void
-selrequest(SDL_Event *e) {
+void selrequest(SDL_Event *e) {
 (void)e;
 // TODO
 	XSelectionRequestEvent *xsre;
@@ -874,8 +844,7 @@ selrequest(SDL_Event *e) {
 }
 #endif
 
-void
-xsetsel(char *str) {
+void xsetsel(char *str) {
 (void)str;
 // TODO
 # if 0
@@ -892,8 +861,7 @@ xsetsel(char *str) {
 #endif
 }
 
-void
-brelease(SDL_Event *e) {
+void brelease(SDL_Event *e) {
 	struct timeval now;
 
 	if(IS_SET(MODE_MOUSE)) {
@@ -942,8 +910,7 @@ brelease(SDL_Event *e) {
 	gettimeofday(&sel.tclick1, NULL);
 }
 
-void
-bmotion(SDL_Event *e) {
+void bmotion(SDL_Event *e) {
 	int starty, endy, oldey, oldex;
 
 	if(IS_SET(MODE_MOUSE)) {
@@ -964,8 +931,7 @@ bmotion(SDL_Event *e) {
 	}
 }
 
-void
-die(const char *errstr, ...) {
+void die(const char *errstr, ...) {
 	va_list ap;
 
 	va_start(ap, errstr);
@@ -974,8 +940,7 @@ die(const char *errstr, ...) {
 	exit(EXIT_FAILURE);
 }
 
-bool
-is_word_break(char c) {
+bool is_word_break(char c) {
 	static char *word_break = WORD_BREAK;
 	char *s = word_break;
 	while(*s) {
@@ -985,8 +950,7 @@ is_word_break(char c) {
 	return false;
 }
 
-void
-execsh(void) {
+void execsh(void) {
 	char **args;
 	char *envshell = getenv("SHELL");
 	const struct passwd *pass = getpwuid(getuid());
@@ -1004,7 +968,7 @@ execsh(void) {
 		setenv("SHELL", pass->pw_shell, 0);
 		setenv("HOME", pass->pw_dir, 0);
 	}
-	chdir(getenv("HOME"));
+	int ret = chdir(getenv("HOME"));
 
 	char *home = get_current_dir_name();
 	setenv("HOME", home, 1);
@@ -1025,15 +989,14 @@ execsh(void) {
 	signal(SIGTERM, SIG_DFL);
 	signal(SIGALRM, SIG_DFL);
 
-	DEFAULT(envshell, shell);
+	DEFAULT(envshell, "/bin/sh");
 	setenv("TERM", termname, 1);
 	args = opt_cmd ? opt_cmd : (char *[]){envshell, "-i", NULL};
 	execvp(args[0], args);
 	exit(EXIT_FAILURE);
 }
 
-void
-sigchld(int a) {
+void sigchld(int a) {
 	int stat = 0;
 	(void)a;
 
@@ -1047,8 +1010,7 @@ sigchld(int a) {
 	}
 }
 
-void
-ttynew(void) {
+void ttynew(void) {
 	int m, s;
 	struct winsize w = {term.row, term.col, 0, 0};
 
@@ -1087,8 +1049,7 @@ ttynew(void) {
 	}
 }
 
-void
-dump(char c) {
+void dump(char c) {
 	static int col;
 
 	fprintf(stderr, " %02x '%c' ", c, isprint(c)?c:'.');
@@ -1096,8 +1057,7 @@ dump(char c) {
 		fprintf(stderr, "\n");
 }
 
-void
-ttyread(void) {
+void ttyread(void) {
 	static char buf[BUFSIZ];
 	static int buflen = 0;
 	char *ptr;
@@ -1125,14 +1085,12 @@ ttyread(void) {
 	memmove(buf, ptr, buflen);
 }
 
-void
-ttywrite(const char *s, size_t n) {
+void ttywrite(const char *s, size_t n) {
 	if(write(cmdfd, s, n) == -1)
 		die("write error on tty: %s\n", SERRNO);
 }
 
-void
-ttyresize(void) {
+void ttyresize(void) {
 	struct winsize w;
 
 	w.ws_row = term.row;
@@ -1143,8 +1101,7 @@ ttyresize(void) {
 		fprintf(stderr, "Couldn't set window size: %s\n", SERRNO);
 }
 
-void
-tsetdirt(int top, int bot) {
+void tsetdirt(int top, int bot) {
 	int i;
 
 	LIMIT(top, 0, term.row-1);
@@ -1154,13 +1111,11 @@ tsetdirt(int top, int bot) {
 		term.dirty[i] = 1;
 }
 
-void
-tfulldirt(void) {
+void tfulldirt(void) {
 	tsetdirt(0, term.row-1);
 }
 
-void
-tcursor(int mode) {
+void tcursor(int mode) {
 	static TCursor c;
 
 	if(mode == CURSOR_SAVE) {
@@ -1171,8 +1126,7 @@ tcursor(int mode) {
 	}
 }
 
-void
-treset(void) {
+void treset(void) {
 	uint i;
 
 	term.c = (TCursor){{
@@ -1182,7 +1136,7 @@ treset(void) {
 	}, .x = 0, .y = 0, .state = CURSOR_DEFAULT};
 
 	memset(term.tabs, 0, term.col * sizeof(*term.tabs));
-	for(i = tabspaces; i < term.col; i += tabspaces)
+	for(i = TABSPACES; i < term.col; i += TABSPACES)
 		term.tabs[i] = 1;
 	term.top = 0;
 	term.bot = term.row - 1;
@@ -1191,8 +1145,7 @@ treset(void) {
 	tclearregion(0, 0, term.col-1, term.row-1);
 }
 
-void
-tnew(int col, int row) {
+void tnew(int col, int row) {
 	/* set screen size */
 	term.row = row;
 	term.col = col;
@@ -1211,8 +1164,7 @@ tnew(int col, int row) {
 	treset();
 }
 
-void
-tswapscreen(void) {
+void tswapscreen(void) {
 	Line *tmp = term.line;
 
 	term.line = term.alt;
@@ -1221,8 +1173,7 @@ tswapscreen(void) {
 	tfulldirt();
 }
 
-void
-tscrolldown(int orig, int n) {
+void tscrolldown(int orig, int n) {
 	int i;
 	Line temp;
 
@@ -1242,8 +1193,7 @@ tscrolldown(int orig, int n) {
 	selscroll(orig, n);
 }
 
-void
-tscrollup(int orig, int n) {
+void tscrollup(int orig, int n) {
 	int i;
 	Line temp;
 	LIMIT(n, 0, term.bot-orig+1);
@@ -1262,8 +1212,7 @@ tscrollup(int orig, int n) {
 	selscroll(orig, -n);
 }
 
-void
-selscroll(int orig, int n) {
+void selscroll(int orig, int n) {
 	if(sel.bx == -1)
 		return;
 
@@ -1285,8 +1234,7 @@ selscroll(int orig, int n) {
 	}
 }
 
-void
-tnewline(int first_col) {
+void tnewline(int first_col) {
 	int y = term.c.y;
 
 	if(y == term.bot) {
@@ -1297,8 +1245,7 @@ tnewline(int first_col) {
 	tmoveto(first_col ? 0 : term.c.x, y);
 }
 
-void
-csiparse(void) {
+void csiparse(void) {
 	/* int noarg = 1; */
 	char *p = csiescseq.buf;
 
@@ -1322,8 +1269,7 @@ csiparse(void) {
 	}
 }
 
-void
-tmoveto(int x, int y) {
+void tmoveto(int x, int y) {
 	LIMIT(x, 0, term.col-1);
 	LIMIT(y, 0, term.row-1);
 	term.c.state &= ~CURSOR_WRAPNEXT;
@@ -1331,8 +1277,7 @@ tmoveto(int x, int y) {
 	term.c.y = y;
 }
 
-void
-tsetchar(char *c, Glyph *attr, int x, int y) {
+void tsetchar(char *c, Glyph *attr, int x, int y) {
 	static char *vt100_0[62] = { /* 0x41 - 0x7e */
 		"↑", "↓", "→", "←", "█", "▚", "☃", /* A - G */
 		0, 0, 0, 0, 0, 0, 0, 0, /* H - O */
@@ -1360,8 +1305,7 @@ tsetchar(char *c, Glyph *attr, int x, int y) {
 	term.line[y][x].state |= GLYPH_SET;
 }
 
-void
-tclearregion(int x1, int y1, int x2, int y2) {
+void tclearregion(int x1, int y1, int x2, int y2) {
 	int x, y, temp;
 
 	if(x1 > x2)
@@ -1381,8 +1325,7 @@ tclearregion(int x1, int y1, int x2, int y2) {
 	}
 }
 
-void
-tdeletechar(int n) {
+void tdeletechar(int n) {
 	int src = term.c.x + n;
 	int dst = term.c.x;
 	int size = term.col - src;
@@ -1399,8 +1342,7 @@ tdeletechar(int n) {
 	tclearregion(term.col-n, term.c.y, term.col-1, term.c.y);
 }
 
-void
-tinsertblank(int n) {
+void tinsertblank(int n) {
 	int src = term.c.x;
 	int dst = src + n;
 	int size = term.col - dst;
@@ -1417,24 +1359,21 @@ tinsertblank(int n) {
 	tclearregion(src, term.c.y, dst - 1, term.c.y);
 }
 
-void
-tinsertblankline(int n) {
+void tinsertblankline(int n) {
 	if(term.c.y < term.top || term.c.y > term.bot)
 		return;
 
 	tscrolldown(term.c.y, n);
 }
 
-void
-tdeleteline(int n) {
+void tdeleteline(int n) {
 	if(term.c.y < term.top || term.c.y > term.bot)
 		return;
 
 	tscrollup(term.c.y, n);
 }
 
-void
-tsetattr(int *attr, int l) {
+void tsetattr(int *attr, int l) {
 	int i;
 
 	for(i = 0; i < l; i++) {
@@ -1533,8 +1472,7 @@ tsetattr(int *attr, int l) {
 	}
 }
 
-void
-tsetscroll(int t, int b) {
+void tsetscroll(int t, int b) {
 	int temp;
 
 	LIMIT(t, 0, term.row-1);
@@ -1550,8 +1488,7 @@ tsetscroll(int t, int b) {
 
 #define MODBIT(x, set, bit) ((set) ? ((x) |= (bit)) : ((x) &= ~(bit)))
 
-void
-tsetmode(bool priv, bool set, int *args, int narg) {
+void tsetmode(bool priv, bool set, int *args, int narg) {
 	int *lim, mode;
 
 	for(lim = args + narg; args < lim; ++args) {
@@ -1640,8 +1577,7 @@ tsetmode(bool priv, bool set, int *args, int narg) {
 #undef MODBIT
 
 
-void
-csihandle(void) {
+void csihandle(void) {
 	switch(csiescseq.mode) {
 	default:
 	unknown:
@@ -1805,8 +1741,7 @@ csihandle(void) {
 	}
 }
 
-void
-csidump(void) {
+void csidump(void) {
 	int i;
 	uint c;
 
@@ -1828,13 +1763,11 @@ csidump(void) {
 	putchar('\n');
 }
 
-void
-csireset(void) {
+void csireset(void) {
 	memset(&csiescseq, 0, sizeof(csiescseq));
 }
 
-void
-strhandle(void) {
+void strhandle(void) {
 	char *p;
 
 	/*
@@ -1882,8 +1815,7 @@ strhandle(void) {
 	}
 }
 
-void
-strparse(void) {
+void strparse(void) {
 	/*
 	 * TODO: Implement parsing like for CSI when required.
 	 * Format: ESC type cmd ';' arg0 [';' argn] ESC \
@@ -1891,8 +1823,7 @@ strparse(void) {
 	return;
 }
 
-void
-strdump(void) {
+void strdump(void) {
 	int i;
 	uint c;
 
@@ -1914,13 +1845,11 @@ strdump(void) {
 	printf("ESC\\\n");
 }
 
-void
-strreset(void) {
+void strreset(void) {
 	memset(&strescseq, 0, sizeof(strescseq));
 }
 
-void
-tputtab(bool forward) {
+void tputtab(bool forward) {
 	uint x = term.c.x;
 
 	if(forward) {
@@ -1937,8 +1866,7 @@ tputtab(bool forward) {
 	tmoveto(x, term.c.y);
 }
 
-void
-tputc(char *c, int len) {
+void tputc(char *c, int len) {
 	uchar ascii = *c;
 	bool control = ascii < '\x20' || ascii == 0177;
 
@@ -2167,8 +2095,7 @@ tputc(char *c, int len) {
 		term.c.state |= CURSOR_WRAPNEXT;
 }
 
-int
-tresize(int col, int row) {
+int tresize(int col, int row) {
 	int i, x;
 	int minrow = MIN(row, term.row);
 	int mincol = MIN(col, term.col);
@@ -2225,7 +2152,7 @@ tresize(int col, int row) {
 		memset(bp, 0, sizeof(*term.tabs) * (col - term.col));
 		while(--bp > term.tabs && !*bp)
 			/* nothing */ ;
-		for(bp += tabspaces; bp < term.tabs + col; bp += tabspaces)
+		for(bp += TABSPACES; bp < term.tabs + col; bp += TABSPACES)
 			*bp = 1;
 	}
 	/* update terminal size */
@@ -2239,14 +2166,12 @@ tresize(int col, int row) {
 	return (slide > 0);
 }
 
-void
-xresize(int col, int row) {
-	xw.tw = MAX(1, 2*borderpx + col * xw.cw);
-	xw.th = MAX(1, 2*borderpx + row * xw.ch);
+void xresize(int col, int row) {
+	xw.tw = MAX(1, 2*BORDER_PX + col * xw.cw);
+	xw.th = MAX(1, 2*BORDER_PX + row * xw.ch);
 }
 
-void
-initcolormap(void) {
+void initcolormap(void) {
 	int i, r, g, b;
 
 	// TODO: allow these to override the xterm ones somehow?
@@ -2272,12 +2197,11 @@ initcolormap(void) {
 	}
 }
 
-void
-sdltermclear(int col1, int row1, int col2, int row2) {
+void sdltermclear(int col1, int row1, int col2, int row2) {
 	if(xw.win == NULL) return;
 	SDL_Rect r = {
-		borderpx + col1 * xw.cw,
-		borderpx + row1 * xw.ch,
+		BORDER_PX + col1 * xw.cw,
+		BORDER_PX + row1 * xw.ch,
 		(col2-col1+1) * xw.cw,
 		(row2-row1+1) * xw.ch
 	};
@@ -2288,56 +2212,15 @@ sdltermclear(int col1, int row1, int col2, int row2) {
 /*
  * Absolute coordinates.
  */
-void
-xclear(int x1, int y1, int x2, int y2) {
+void xclear(int x1, int y1, int x2, int y2) {
 	if(xw.win == NULL) return;
 	SDL_Rect r = { x1, y1, x2-x1, y2-y1 };
 	SDL_Color c = dc.colors[IS_SET(MODE_REVERSE) ? defaultfg : defaultbg];
 	SDL_FillRect(xw.win, &r, SDL_MapRGB(xw.win->format, c.r, c.g, c.b));
 }
 
-void
-sdlloadfonts(char *fontstr, int fontsize) {
-	//char *bfontstr;
-
-	usedfont = fontstr;
-	usedfontsize = fontsize;
-
-	/* XXX: Strongly assumes the original setting had a : in it! */
-	/*if((bfontstr = strchr(fontstr, ':'))) {
-		*bfontstr = '\0';
-		bfontstr++;
-	} else {
-		bfontstr = strchr(fontstr, '\0');
-		bfontstr++;
-	}*/
-
-	/*if(dc.font) TTF_CloseFont(dc.font);
-	dc.font = TTF_OpenFont(fontstr, fontsize);
-    fprintf(stderr, "%s\n", fontstr);*/
-	//TTF_SizeUTF8(dc.font, "O", &xw.cw, &xw.ch);
-    xw.cw = 6;
-    xw.ch = 8;
-
-	/*if(dc.ifont) TTF_CloseFont(dc.ifont);
-	dc.ifont = TTF_OpenFont(fontstr, fontsize);
-    fprintf(stderr, "%s\n", fontstr);
-	TTF_SetFontStyle(dc.ifont, TTF_STYLE_ITALIC);
-
-	if(dc.bfont) TTF_CloseFont(dc.bfont);
-	dc.bfont = TTF_OpenFont(bfontstr, fontsize);
-    fprintf(stderr, "%s\n", bfontstr);
-
-	if(dc.ibfont) TTF_CloseFont(dc.ibfont);
-	dc.ibfont = TTF_OpenFont(bfontstr, fontsize);
-    fprintf(stderr, "%s\n", bfontstr);
-	TTF_SetFontStyle(dc.ibfont, TTF_STYLE_ITALIC);*/
-}
-
-void
-xzoom(const Arg *arg)
+void xzoom(const Arg *arg)
 {
-	sdlloadfonts(usedfont, usedfontsize + arg->i);
 	cresize(0, 0);
 	draw();
 }
@@ -2349,90 +2232,40 @@ void sdlshutdown(void) {
 		fprintf(stderr, "SDL shutdown\n");
 		if(thread) SDL_KillThread(thread);
 		if(xw.win) SDL_FreeSurface(xw.win);
-#if defined(MIYOOMINI) || defined(TRIMUISMART) || defined(RG35XX)
-		if(screen2) SDL_FreeSurface(screen2);
-#endif
 		xw.win = NULL;
 		SDL_Quit();
 	}
 }
 
-void
-sdlinit(void) {
-	//const SDL_VideoInfo *vi;
-	fprintf(stderr, "SDL init\n");
-
-	//dc.font = dc.ifont = dc.bfont = dc.ibfont = NULL;
-
+void sdlinit(void) {
 	if(SDL_Init(SDL_INIT_VIDEO) == -1) {
 		fprintf(stderr,"Unable to initialize SDL: %s\n", SDL_GetError());
 		exit(EXIT_FAILURE);
 	}
 
-	fprintf(stderr, "SDL font\n");
 	SDL_EnableUNICODE(1);
-
-	/*if(TTF_Init() == -1) {
-		printf("TTF_Init: %s\n", TTF_GetError());
+	if(TTF_Init() == -1) {
+		fprintf(stderr,"TTF_Init: %s\n", TTF_GetError());
 		exit(EXIT_FAILURE);
 	}
-
 	if(atexit(TTF_Quit)) {
 		fprintf(stderr,"Unable to register TTF_Quit atexit\n");
-	}*/
-
-	//vi = SDL_GetVideoInfo();
-
-	/* font */
-	usedfont = (opt_font == NULL)? font : opt_font;
-	sdlloadfonts(usedfont, fontsize);
-
-	fprintf(stderr, "SDL font\n");
-	/* colors */
+	}
+	font_init();
 	initcolormap();
+    xw.cw = FONT_WIDTH;
+    xw.ch = FONT_HEIGHT;
+	xw.w = SCREEN_WIDTH;
+	xw.h = SCREEN_HEIGHT;
 
-//	/* adjust fixed window geometry */
-//	if(xw.isfixed) {
-//		if(xw.fx < 0)
-//			xw.fx = vi->current_w + xw.fx - xw.fw - 1;
-//		if(xw.fy < 0)
-//			xw.fy = vi->current_h + xw.fy - xw.fh - 1;
-//
-//		xw.h = xw.fh;
-//		xw.w = xw.fw;
-//	} else {
-//		/* window - default size */
-//		xw.h = 2*borderpx + term.row * xw.ch;
-//		xw.w = 2*borderpx + term.col * xw.cw;
-//		xw.fx = 0;
-//		xw.fy = 0;
-//	}
-
-	xw.w = initial_width;
-	xw.h = initial_height;
-
-#ifdef RG35XX
-	if(!(screen = SDL_SetVideoMode(640, 480, 16, SDL_HWSURFACE))) {
-#elif MIYOOMINI
-	if(!(screen = SDL_SetVideoMode(640, 480, 32, SDL_HWSURFACE))) {
-#elif TRIMUISMART
-	setenv("SDL_USE_PAN", "true", 1);						// allow DOUBLEBUF
-	if(!(screen = SDL_SetVideoMode(240, 320, 16, SDL_HWSURFACE | SDL_DOUBLEBUF))) {	// rotated LCD
-#else
-	if(!(screen = SDL_SetVideoMode(320, 240, 16, SDL_HWSURFACE | SDL_DOUBLEBUF))) {
-#endif
+	if(!(screen = SDL_SetVideoMode(SCREEN_WIDTH, SCREEN_HEIGHT, 16, SDL_HWSURFACE))) {
 		fprintf(stderr,"Unable to set video mode: %s\n", SDL_GetError());
 		exit(EXIT_FAILURE);
 	}
-#if defined(MIYOOMINI) || defined(TRIMUISMART) || defined(RG35XX)
+
     xw.win = SDL_CreateRGBSurface(SDL_SWSURFACE, xw.w, xw.h, 16, 0xF800, 0x7E0, 0x1F, 0);	// console screen
-    screen2 = SDL_CreateRGBSurface(SDL_SWSURFACE, xw.w, xw.h, 16, 0xF800, 0x7E0, 0x1F, 0);	// for keyboardMix
-#else
-    xw.win = SDL_CreateRGBSurface(SDL_SWSURFACE, xw.w, xw.h, 16, screen->format->Rmask, screen->format->Gmask, screen->format->Bmask, screen->format->Amask);
-#endif
 
 	sdlresettitle();
-	//
 	// TODO: might need to use system threads
 	if(!(thread = SDL_CreateThread(ttythread, NULL))) {
 		fprintf(stderr, "Unable to create thread: %s\n", SDL_GetError());
@@ -2440,8 +2273,6 @@ sdlinit(void) {
 	}
 
 	expose(NULL);
-	//vi = SDL_GetVideoInfo();
-	//cresize(vi->current_w, vi->current_h);
 
     //SDL_EnableKeyRepeat(SDL_DEFAULT_REPEAT_DELAY, SDL_DEFAULT_REPEAT_INTERVAL);
 	SDL_EnableKeyRepeat(200, 20);
@@ -2450,11 +2281,9 @@ sdlinit(void) {
 	SDL_PushEvent(&event);
 }
 
-void
-xdraws(char *s, Glyph base, int x, int y, int charlen, int bytelen) {
-	int winx = borderpx + x * xw.cw, winy = borderpx + y * xw.ch,
+void xdraws(char *s, Glyph base, int x, int y, int charlen, int bytelen) {
+	int winx = BORDER_PX + x * xw.cw, winy = BORDER_PX + y * xw.ch,
 	    width = charlen * xw.cw;
-	//TTF_Font *font = dc.font;
 	SDL_Color *fg = &dc.colors[base.fg], *bg = &dc.colors[base.bg],
 	          *temp, revfg, revbg;
 
@@ -2477,13 +2306,16 @@ xdraws(char *s, Glyph base, int x, int y, int charlen, int bytelen) {
 		 *	196 - 231 – highest 256 color cube
 		 *	252 - 255 – brightest colors in greyscale
 		 */
-		//font = dc.bfont;
+		//TODO: set font BOLD;
 	}
 
-	/*if(base.mode & ATTR_ITALIC)
-		font = dc.ifont;
-	if((base.mode & ATTR_ITALIC) && (base.mode & ATTR_BOLD))
-		font = dc.ibfont;*/
+	if(base.mode & ATTR_ITALIC) {
+		//TODO: set font ITALIC;
+	}
+	if((base.mode & ATTR_ITALIC) && (base.mode & ATTR_BOLD)) {
+		//TODO: set font BOLD;
+		//TODO: set font ITALIC;
+	}
 
 	if(IS_SET(MODE_REVERSE)) {
 		if(fg == &dc.colors[defaultfg]) {
@@ -2510,7 +2342,7 @@ xdraws(char *s, Glyph base, int x, int y, int charlen, int bytelen) {
 
 	/* Intelligent cleaning up of the borders. */
 	if(x == 0) {
-		xclear(0, (y == 0)? 0 : winy, borderpx,
+		xclear(0, (y == 0)? 0 : winy, BORDER_PX,
 			winy + xw.ch + (y == term.row-1)? xw.h : 0);
 	}
 	if(x + charlen >= term.col-1) {
@@ -2518,51 +2350,25 @@ xdraws(char *s, Glyph base, int x, int y, int charlen, int bytelen) {
 			(y == term.row-1)? xw.h : (winy + xw.ch));
 	}
 	if(y == 0)
-		xclear(winx, 0, winx + width, borderpx);
+		xclear(winx, 0, winx + width, BORDER_PX);
 	if(y == term.row-1)
 		xclear(winx, winy + xw.ch, winx + width, xw.h);
 
-	{
-		//SDL_Surface *text_surface;
-		SDL_Rect r = {winx, winy, width, xw.ch};
-
-	if(xw.win != NULL) 
+	SDL_Rect r = {winx, winy, width, xw.ch};
+	if(xw.win != NULL) {
 		SDL_FillRect(xw.win, &r, SDL_MapRGB(xw.win->format, bg->r, bg->g, bg->b));
-		//draw_keyboard(xw.win);
+		draw_string(xw.win, s, r.x, r.y-4, fg);
+	}
 
-/*#ifdef USE_ANTIALIASING
-		if(!(text_surface=TTF_RenderUTF8_Shaded(font,s,*fg, *bg))) {
-#else
-		if(!(text_surface=TTF_RenderUTF8_Solid(font,s,*fg))) {
-#endif
-			printf("Could not TTF_RenderUTF8_Solid: %s\n", TTF_GetError());
-			exit(EXIT_FAILURE);
-		} else {
-			SDL_BlitSurface(text_surface,NULL,xw.win,&r);
-			SDL_FreeSurface(text_surface);
-		}*/
-        int xs = r.x;
-				if(xw.win != NULL) 
-					draw_string(xw.win, s, xs, r.y, SDL_MapRGB(xw.win->format, fg->r, fg->g, fg->b));
-
-        /*while(*s) {
-            draw_char(xw.win, *s, xs, r.y, SDL_MapRGB(xw.win->format, fg->r, fg->g, fg->b));
-            xs += 6;
-            s++;
-        }*/
-
-		if(base.mode & ATTR_UNDERLINE) {
-			//r.y += TTF_FontAscent(font) + 1;
-            r.y += xw.ch;
-			r.h = 1;
-			if(xw.win != NULL) 
-				SDL_FillRect(xw.win, &r, SDL_MapRGB(xw.win->format, fg->r, fg->g, fg->b));
-		}
+	if(base.mode & ATTR_UNDERLINE) {
+		r.y += xw.ch;
+		r.h = 1;
+		if(xw.win != NULL) 
+			SDL_FillRect(xw.win, &r, SDL_MapRGB(xw.win->format, fg->r, fg->g, fg->b));
 	}
 }
 
-void
-xdrawcursor(void) {
+void xdrawcursor(void) {
 	static int oldx = 0, oldy = 0;
 	int sl;
 	Glyph g = {{' '}, ATTR_NULL, defaultbg, defaultcs, 0};
@@ -2596,13 +2402,11 @@ xdrawcursor(void) {
 	}
 }
 
-void
-sdlresettitle(void) {
+void sdlresettitle(void) {
 	SDL_WM_SetCaption(opt_title ? opt_title : "st", NULL);
 }
 
-void
-redraw(void) {
+void redraw(void) {
 	struct timespec tv = {0, REDRAW_TIMEOUT * 1000};
 
 	tfulldirt();
@@ -2610,14 +2414,12 @@ redraw(void) {
 	nanosleep(&tv, NULL);
 }
 
-void
-draw(void) {
+void draw(void) {
 	drawregion(0, 0, term.col, term.row);
 	xflip();
 }
 
-void
-drawregion(int x1, int y1, int x2, int y2) {
+void drawregion(int x1, int y1, int x2, int y2) {
 	int ic, ib, x, y, ox, sl;
 	Glyph base, new;
 	char buf[DRAW_BUF_SIZ];
@@ -2676,14 +2478,12 @@ void activeEvent(SDL_Event *ev) {
 	}
 }
 
-void
-expose(SDL_Event *ev) {
+void expose(SDL_Event *ev) {
 	(void)ev;
 	xw.state |= WIN_VISIBLE | WIN_REDRAW;
 }
 
-void
-visibility(SDL_Event *ev) {
+void visibility(SDL_Event *ev) {
 	SDL_ActiveEvent *e = &ev->active;
 
 	if(!e->gain) {
@@ -2694,14 +2494,12 @@ visibility(SDL_Event *ev) {
 	}
 }
 
-void
-unmap(SDL_Event *ev) {
+void unmap(SDL_Event *ev) {
 	(void)ev;
 	xw.state &= ~WIN_VISIBLE;
 }
 
-void
-focus(SDL_Event *ev) {
+void focus(SDL_Event *ev) {
 	if(ev->active.gain) {
 		xw.state |= WIN_FOCUSED;
 #if 0
@@ -2712,8 +2510,7 @@ focus(SDL_Event *ev) {
 	}
 }
 
-char*
-kmap(SDLKey k, SDLMod state) {
+char* kmap(SDLKey k, SDLMod state) {
 	int i;
 	SDLMod mask;
 
@@ -2728,8 +2525,7 @@ kmap(SDLKey k, SDLMod state) {
 	return NULL;
 }
 
-void
-kpress(SDL_Event *ev) {
+void kpress(SDL_Event *ev) {
 	SDL_KeyboardEvent *e = &ev->key;
 	char buf[32], *customkey;
 	int meta, shift, i;
@@ -2795,8 +2591,7 @@ kpress(SDL_Event *ev) {
 	}
 }
 
-void
-cresize(int width, int height)
+void cresize(int width, int height)
 {
     printf("%d %d\n", width, height);
 	int col, row;
@@ -2806,37 +2601,22 @@ cresize(int width, int height)
 	if(height != 0)
 		xw.h = height;
 
-	col = (xw.w - 2*borderpx) / xw.cw;
-	row = (xw.h - 2*borderpx) / xw.ch;
+	col = (xw.w - 2*BORDER_PX) / xw.cw;
+	row = (xw.h - 2*BORDER_PX) / xw.ch;
 
     printf("set videomode %dx%d\n", xw.w, xw.h);
-#ifdef RG35XX
-	if(!(screen = SDL_SetVideoMode(640, 480, 16, SDL_HWSURFACE))) {
-#elif MIYOOMINI
-	if(!(screen = SDL_SetVideoMode(640, 480, 32, SDL_HWSURFACE))) {
-#elif TRIMUISMART
-	if(!(screen = SDL_SetVideoMode(240, 320, 16, SDL_HWSURFACE | SDL_DOUBLEBUF))) {
-#else
-	if(!(screen = SDL_SetVideoMode(320, 240, 16, SDL_HWSURFACE | SDL_DOUBLEBUF))) {
-#endif
+	if(!(screen = SDL_SetVideoMode(SCREEN_WIDTH, SCREEN_HEIGHT, 16, SDL_HWSURFACE))) {
 		fprintf(stderr,"Unable to set video mode: %s\n", SDL_GetError());
 		exit(EXIT_FAILURE);
 	}
 	if(xw.win) SDL_FreeSurface(xw.win);
-#if defined(MIYOOMINI) || defined(TRIMUISMART) || defined(RG35XX)
 	xw.win = SDL_CreateRGBSurface(SDL_SWSURFACE, xw.w, xw.h, 16, 0xF800, 0x7E0, 0x1F, 0);	// console screen
-	if(screen2) SDL_FreeSurface(screen2);
-	screen2 = SDL_CreateRGBSurface(SDL_SWSURFACE, xw.w, xw.h, 16, 0xF800, 0x7E0, 0x1F, 0);	// for keyboardMix
-#else
-	xw.win = SDL_CreateRGBSurface(SDL_SWSURFACE, xw.w, xw.h, 16, screen->format->Rmask, screen->format->Gmask, screen->format->Bmask, screen->format->Amask);
-#endif
 	tresize(col, row);
 	xresize(col, row);
 	ttyresize();
 }
 
-void
-resize(SDL_Event *e) {
+void resize(SDL_Event *e) {
 	if(e->resize.w == xw.w && e->resize.h == xw.h)
 		return;
 
@@ -2891,8 +2671,7 @@ int ttythread(void *unused) {
 	return 0;
 }
 
-void
-run(void) {
+void run(void) {
 	queue_t qid = queue_create();
 	SDL_Event ev;
 
@@ -2946,8 +2725,7 @@ run(void) {
     SDL_KillThread(thread);
 }
 
-int
-main(int argc, char *argv[]) {
+int main(int argc, char *argv[]) {
     int i;
 
     xw.fw = xw.fh = xw.fx = xw.fy = 0;
@@ -3011,17 +2789,13 @@ main(int argc, char *argv[]) {
         }
     }
 
-		if(atexit(sdlshutdown)) {
-			fprintf(stderr,"Unable to register SDL_Quit atexit\n");
-		}
-		/*
-		char path[PATH_MAX];
-		realpath(dirname(argv[0]), path);
-		snprintf(preload_libname, PATH_MAX + 17, "%s/libst-preload.so", path); */
+	if(atexit(sdlshutdown)) {
+		fprintf(stderr,"Unable to register SDL_Quit atexit\n");
+	}
 
 run:
     setlocale(LC_CTYPE, "");
-    tnew((initial_width - 2) / 6, (initial_height - 2) / 8);
+    tnew((SCREEN_WIDTH - 2*BORDER_PX) / FONT_WIDTH, (SCREEN_HEIGHT - 2*BORDER_PX) / FONT_HEIGHT);
     ttynew();
     sdlinit(); /* Must have TTY before cresize */
     init_keyboard();
