@@ -223,13 +223,18 @@ int compute_new_col(int visual_offset, int old_row, int new_row) {
 
 int handle_keyboard_event(SDL_Event* event) {
 	static int visual_offset = 0;
+	if(event->key.keysym.sym == SDLK_CAPSLOCK) {
+		// do nothing
+		return 1;
+	}
 	if(event->key.type == SDL_KEYDOWN && !(event->key.keysym.mod & KMOD_SYNTHETIC) && event->key.keysym.sym == KEY_ACTIVATE) {
 		active = ! active;
 		return 1;
 	}
 	if(!active) return 0;
-	if((event->key.type == SDL_KEYUP || event->key.type == SDL_KEYDOWN) && event->key.keysym.mod & KMOD_SYNTHETIC) return 0;
-
+	if((event->key.type == SDL_KEYUP || event->key.type == SDL_KEYDOWN) && event->key.keysym.mod & KMOD_SYNTHETIC) {
+		return 0;
+	}
 	if(event->key.type == SDL_KEYDOWN && event->key.state == SDL_PRESSED) {
 		if(show_help) {
 			// do nothing
