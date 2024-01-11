@@ -27,6 +27,8 @@
 #define KEY_RETURN      SDLK_m // START
 #define KEY_ARROW_LEFT	SDLK_j // L2
 #define KEY_ARROW_RIGHT	SDLK_k // R2
+#define KEY_SHOT	    SDLK_t // vol-
+#define KEY_HELP	    SDLK_r // vol+
 
 #endif
 

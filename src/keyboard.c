@@ -1,4 +1,5 @@
 #include <SDL/SDL.h>
+#include <SDL/SDL_video.h>
 #include "font.h"
 #include "config.h"
 
@@ -240,9 +241,13 @@ int handle_keyboard_event(SDL_Event* event) {
 			// do nothing
 		} else if(event->key.keysym.sym == KEY_QUIT) {
 			exit(0);
-/*		} else if(event->key.keysym.sym == KEY_HELP) {
+		} else if(event->key.keysym.sym == KEY_HELP) {
 			show_help = 1;
-*/
+		} else if(event->key.keysym.sym == KEY_SHOT && event->key.type == SDL_KEYDOWN) {
+			uint32_t timestamp = SDL_GetTicks();
+			char filename[32];
+			sprintf(filename, "screenshot-%d.bmp", timestamp);
+			SDL_SaveBMP(SDL_GetVideoSurface(), filename);
 		} else if(event->key.keysym.sym == KEY_UP && selected_j > 0) {
 			selected_i = compute_new_col(visual_offset, selected_j, selected_j - 1);
 			selected_j--;
