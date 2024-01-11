@@ -200,6 +200,7 @@ typedef struct {
 typedef struct {
 	//Colormap cmap;
 	SDL_Surface *win;
+	SDL_Surface *keyboardwin;
 	int scr;
 	bool isfixed; /* is fixed geometry? */
 	int fx, fy, fw, fh; /* fixed geometry */
@@ -506,8 +507,9 @@ void * xcalloc(size_t nmemb, size_t size) {
 
 void xflip(void) {
 	if(xw.win == NULL) return;
-	SDL_BlitSurface(xw.win, NULL, screen, NULL);
-	draw_keyboard(screen);
+	SDL_BlitSurface(xw.win, NULL, xw.keyboardwin, NULL);
+	draw_keyboard(xw.keyboardwin);
+	SDL_BlitSurface(xw.keyboardwin, NULL, screen, NULL);
 	SDL_Flip(screen);
 }
 
@@ -2264,6 +2266,7 @@ void sdlinit(void) {
 	}
 
     xw.win = SDL_CreateRGBSurface(SDL_SWSURFACE, xw.w, xw.h, 16, 0xF800, 0x7E0, 0x1F, 0);	// console screen
+    xw.keyboardwin = SDL_CreateRGBSurface(SDL_SWSURFACE, xw.w, xw.h, 16, 0xF800, 0x7E0, 0x1F, 0);	// for keyboardMix
 
 	sdlresettitle();
 	// TODO: might need to use system threads
@@ -2605,12 +2608,14 @@ void cresize(int width, int height)
 	row = (xw.h - 2*BORDER_PX) / xw.ch;
 
     printf("set videomode %dx%d\n", xw.w, xw.h);
-	if(!(screen = SDL_SetVideoMode(SCREEN_WIDTH, SCREEN_HEIGHT, 16, SDL_HWSURFACE))) {
+	if(!(screen = SDL_SetVideoMode(SCREEN_WIDTH, SCREEN_HEIGHT, 16, SDL_SWSURFACE))) {
 		fprintf(stderr,"Unable to set video mode: %s\n", SDL_GetError());
 		exit(EXIT_FAILURE);
 	}
 	if(xw.win) SDL_FreeSurface(xw.win);
 	xw.win = SDL_CreateRGBSurface(SDL_SWSURFACE, xw.w, xw.h, 16, 0xF800, 0x7E0, 0x1F, 0);	// console screen
+	if(xw.keyboardwin) SDL_FreeSurface(xw.keyboardwin);
+	xw.keyboardwin = SDL_CreateRGBSurface(SDL_SWSURFACE, xw.w, xw.h, 16, 0xF800, 0x7E0, 0x1F, 0);	// for keyboardMix
 	tresize(col, row);
 	xresize(col, row);
 	ttyresize();
