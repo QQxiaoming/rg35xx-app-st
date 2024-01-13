@@ -37,7 +37,15 @@ jobs:
       - name: tar_release
         shell: bash -l {0}
         run: |
-          tar -czf release.tar.gz out/j2k.so out/st.elf src/res
+          mkdir st
+          cp out/st.elf st/
+          cp out/j2k.so st/
+          cp src/res/inziu-iosevkaCC-SC-regular.ttf st/
+          cp scripts/sw.sh st/
+          cp scripts/Terminal.sh st/
+          cp scripts/终端.sh st/
+          cp scripts/终端.sh ./
+          tar -czf release.tar.gz ./st ./Imgs ./终端.sh
 
       - name: Upload build asserts
         uses: actions/upload-artifact@v4
